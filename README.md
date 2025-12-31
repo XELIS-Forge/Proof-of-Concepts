@@ -65,7 +65,6 @@ We welcome experimental contributions from the community! If you have an interes
 - **Mark limitations clearly:** Be honest about what doesn't work or needs improvement
 - **Include comments:** Help others understand your code and approach
 - **Test where possible:** Show that the core concept functions as intended
-- **Consider privacy:** Leverage XELIS's encryption features thoughtfully
 
 ## Example Use Cases
 
