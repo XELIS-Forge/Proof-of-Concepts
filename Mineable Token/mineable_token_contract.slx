@@ -1,0 +1,209 @@
+const MS_PER_SEC: u64 = 1000
+// --------------------
+// CONFIG
+// --------------------
+const TOKEN_NAME: string = "Xelis Mineable Token"
+const TOKEN_TICKER: string = "MINETOK"
+
+const DECIMALS: u8 = 8
+const BLOCK_REWARD: u64 = (10 ** DECIMALS) * 50             // 50 tokens
+const MAX_SUPPLY: u64 = (10 ** DECIMALS) * 21_000_000       // 21M tokens
+
+const TARGET_BLOCK_TIME: u64 = MS_PER_SEC * 60              // seconds
+const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 100
+const INITIAL_DIFFICULTY: u256 = 10_000_000
+
+const MIN_DIFFICULTY: u256 = 1000
+const MAX_FUTURE_TS_DRIFT: u64 = MS_PER_SEC * 5             // seconds
+const MAX_PAST_TS_DRIFT: u64 = MS_PER_SEC * 30              // seconds
+
+
+
+// --------------------
+// EVENTS
+// --------------------
+struct MiningSubmission {
+    miner_address: Address,
+    nonce: u64,
+    pow_hash: Hash,
+    block_number: u64,
+    new_diff: u256
+}
+
+// --------------------
+// HEADER GENERATION
+// --------------------
+fn generate_header_hash(
+    block_number: u64,
+    miner: Address,
+    difficulty: u256,
+    prev_hash: Hash,
+    ts: u64
+) -> Hash {
+    let header: bytes = block_number.to_le_bytes()
+    header.extend(miner.to_bytes())
+    header.extend(difficulty.to_le_bytes())
+    header.extend(prev_hash.to_bytes())
+    header.extend(ts.to_le_bytes())
+
+    return Hash::blake3(header)
+}
+
+// --------------------
+// SHA256D VERIFICATION
+// --------------------
+fn verify_sha256d(
+    header_hash: Hash,
+    nonce: u64,
+    difficulty: u256
+) -> optional<Hash> {
+    let input: bytes = header_hash.to_bytes()
+    input.extend(nonce.to_le_bytes())
+
+    let first: Hash = Hash::sha3(input)
+    let final_hash: Hash = Hash::sha3(first.to_bytes())
+
+    let hash_val: u256 = final_hash.to_u256()
+    let max_target: u256 = Hash::max().to_u256()
+    let target: u256 = max_target / difficulty
+
+    if hash_val <= target {
+        return final_hash
+    }
+
+    return null
+}
+
+// --------------------
+// REWARD CALCULATION
+// --------------------
+fn calculate_reward(asset: Asset) -> u64 {
+    let current_supply: u64 = asset.get_supply()
+    let remaining: u64 = MAX_SUPPLY - current_supply
+
+    if remaining < BLOCK_REWARD {
+        return remaining
+    }
+
+    return BLOCK_REWARD
+}
+
+// --------------------
+// DIFFICULTY ADJUSTMENT
+// --------------------
+fn adjust_difficulty(
+    current_difficulty: u256,
+    current_time: u64,
+    last_adjustment_time: u64
+) -> u256 {
+    let elapsed: u64 = current_time - last_adjustment_time
+    let expected: u64 = TARGET_BLOCK_TIME * DIFFICULTY_ADJUSTMENT_INTERVAL
+
+    let new_diff: u256 = current_difficulty
+    let ratio: u64 = (elapsed * 100) / expected
+
+    if ratio < 80 {
+        new_diff = current_difficulty + (current_difficulty / 4)
+    } else if ratio < 90 {
+        new_diff = current_difficulty + (current_difficulty / 10)
+    } else if ratio > 120 {
+        new_diff = current_difficulty - (current_difficulty / 5)
+    } else if ratio > 110 {
+        new_diff = current_difficulty - (current_difficulty / 10)
+    }
+
+    if new_diff < MIN_DIFFICULTY {
+        new_diff = MIN_DIFFICULTY
+    }
+
+    return new_diff
+}
+
+// --------------------
+// CONSTRUCTOR
+// --------------------
+hook constructor() -> u64 {
+    let storage: Storage = Storage::new()
+
+    let asset: optional<Asset> = Asset::create(
+        0,
+        TOKEN_NAME,
+        TOKEN_TICKER,
+        DECIMALS,
+        MaxSupplyMode::Mintable { max_supply: MAX_SUPPLY }
+    )
+    require(asset.is_some(), "assetCreateFail")
+
+    storage.store("asset", asset.unwrap().get_hash())
+    storage.store("diff", INITIAL_DIFFICULTY)
+    storage.store("prev_hash", Hash::zero())
+    storage.store("block", 0)
+    storage.store("lasttime", Block::current().timestamp())
+    storage.store("adjtime", Block::current().timestamp())
+
+    return 0
+}
+
+// --------------------
+// MINING ENTRY
+// --------------------
+entry submit_solution(nonce: u64, ts: u64) {
+    let storage: Storage = Storage::new()
+
+    let asset_hash: Hash = storage.load("asset").expect("noAsset")
+    let difficulty: u256 = storage.load("diff").expect("noDiff")
+    let prev_hash: Hash = storage.load("prev_hash").expect("noPrev")
+    let block_number: u64 = storage.load("block").expect("noBlock")
+    let last_time: u64 = storage.load("lasttime").expect("noLastTime")
+    let last_adj: u64 = storage.load("adjtime").expect("noAdjTime")
+
+    let now: u64 = Block::current().timestamp()
+
+    require(
+    ts >= now - MAX_PAST_TS_DRIFT &&
+    ts <= now + MAX_FUTURE_TS_DRIFT,
+    "submissionOutsideAcceptableTime"
+    )
+    
+    require(ts > last_time, "submissionOlderThanLast")
+
+    let miner: Address = get_caller().expect("noCaller")
+
+    let header_hash: Hash =
+        generate_header_hash(block_number, miner, difficulty, prev_hash, ts)
+
+    let pow_hash: optional<Hash> =
+        verify_sha256d(header_hash, nonce, difficulty)
+
+    require(pow_hash.is_some(), "powHashInvalid")
+
+    let final_hash: Hash = pow_hash.unwrap()
+    storage.store("prev_hash", final_hash)
+
+    let asset: Asset = Asset::get_by_hash(asset_hash).expect("assetMissing")
+    let reward: u64 = calculate_reward(asset)
+    asset.mint(reward)
+    transfer(miner, reward, asset_hash)
+
+    let new_block: u64 = block_number + 1
+    storage.store("block", new_block)
+    storage.store("lasttime", ts)
+
+    let new_diff: u256 = difficulty
+    if new_block % DIFFICULTY_ADJUSTMENT_INTERVAL == 0 {
+        new_diff = adjust_difficulty(difficulty, now, last_adj)
+        storage.store("diff", new_diff)
+        storage.store("adjtime", now)
+    }
+
+    let event: MiningSubmission = MiningSubmission {
+        miner_address: miner,
+        nonce: nonce,
+        pow_hash: final_hash,
+        block_number: block_number,
+        new_diff: new_diff
+    }
+
+    fire_event(1, event)
+    return 0
+}
