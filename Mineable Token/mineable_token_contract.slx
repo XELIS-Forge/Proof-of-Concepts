@@ -1,13 +1,19 @@
 const MS_PER_SEC: u64 = 1000
+enum EmissionType {
+    Linear { amount : u64},
+    Halving {amount: u64, interval : u64 },
+}
 // --------------------
 // CONFIG
 // --------------------
-const TOKEN_NAME: string = "Xelis Mineable Token"
-const TOKEN_TICKER: string = "MINETOK"
-
 const DECIMALS: u8 = 8
 const BLOCK_REWARD: u64 = (10 ** DECIMALS) * 50             // 50 tokens
 const MAX_SUPPLY: u64 = (10 ** DECIMALS) * 21_000_000       // 21M tokens
+const HALVING_INTERVAL : u64 = 210_000                      // every 210 000 blocs like bitcoin
+
+const TOKEN_NAME: string = "Xelis Mineable Token"
+const TOKEN_TICKER: string = "MINETOK"
+const TOKEN_EMISSION : EmissionType = EmissionType::Linear {amount : BLOCK_REWARD}
 
 const TARGET_BLOCK_TIME: u64 = MS_PER_SEC * 60              // seconds
 const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 100
@@ -16,8 +22,6 @@ const INITIAL_DIFFICULTY: u256 = 10_000_000
 const MIN_DIFFICULTY: u256 = 1000
 const MAX_FUTURE_TS_DRIFT: u64 = MS_PER_SEC * 5             // seconds
 const MAX_PAST_TS_DRIFT: u64 = MS_PER_SEC * 30              // seconds
-
-
 
 // --------------------
 // EVENTS
@@ -78,13 +82,25 @@ fn verify_sha256d(
 // REWARD CALCULATION
 // --------------------
 fn calculate_reward(asset: Asset) -> u64 {
-    let current_supply: u64 = asset.get_supply()
-    let remaining: u64 = MAX_SUPPLY - current_supply
+    match TOKEN_EMISSION {
+        EmissionType::Linear { amount: x } => {
+            let current_supply: u64 = asset.get_supply()
+            let remaining: u64 = MAX_SUPPLY - current_supply
+        
+            if remaining < BLOCK_REWARD {
+                return remaining
+            }
 
-    if remaining < BLOCK_REWARD {
-        return remaining
+            return BLOCK_REWARD
+        },
+        EmissionType::Halving {amount : x ,interval :y} => {
+            let storage: Storage = Storage::new()
+            let height: u64 = storage.load("block").unwrap()
+            let reward: u64 = x >> (height / y )
+            // println("Reward of block " + height.to_string(10) + " is " + reward.to_string(10))
+            return reward
+        }
     }
-
     return BLOCK_REWARD
 }
 
@@ -133,7 +149,6 @@ hook constructor() -> u64 {
         MaxSupplyMode::Mintable { max_supply: MAX_SUPPLY }
     )
     require(asset.is_some(), "assetCreateFail")
-
     storage.store("asset", asset.unwrap().get_hash())
     storage.store("diff", INITIAL_DIFFICULTY)
     storage.store("prev_hash", Transaction::current().unwrap().hash())
