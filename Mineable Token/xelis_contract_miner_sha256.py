@@ -169,6 +169,7 @@ def generate_header_hash(
         miner: bytes,
         difficulty: int,
         prev_hash: bytes,
+        prev_hash_xel: bytes,
         ts: int
 ) -> bytes:
     header = b""
@@ -176,6 +177,7 @@ def generate_header_hash(
     header += miner
     header += difficulty.to_bytes(32, "little")
     header += prev_hash
+    header += prev_hash_xel
     header += struct.pack("<Q", ts)
     return blake3.blake3(header).digest()
 
@@ -200,6 +202,7 @@ class MiningState:
         self.block_number = 0
         self.difficulty = 1
         self.prev_hash = bytes(32)
+        self.prev_hash_xel = bytes(32)
         self.ts = int(time.time() * 1000)
 
 
@@ -215,7 +218,9 @@ def sync_chain_state(contract: str):
         difficulty = int(get_contract_data(contract, "diff")["data"]["value"]["value"])
         prev_hash_hex = get_contract_data(contract, "prev_hash")["data"]["value"]["value"]["value"]
         prev_hash = bytes.fromhex(prev_hash_hex)
-        return block, difficulty, prev_hash
+        prev_hash_xel_hex = get_contract_data(contract, "prev_hash_xel")["data"]["value"]["value"]["value"]
+        prev_hash_xel = bytes.fromhex(prev_hash_xel_hex)
+        return block, difficulty, prev_hash, prev_hash_xel
     except Exception as e:
         print(f"Error syncing chain state: {e}")
         raise
@@ -240,7 +245,7 @@ def mine_loop(address_bytes: bytes):
                 if state.awaiting_confirmation:
                     continue
                 time.sleep(0.1)
-                state.block_number, state.difficulty, state.prev_hash = sync_chain_state(CONTRACT_HASH)
+                state.block_number, state.difficulty, state.prev_hash, state.prev_hash_xel = sync_chain_state(CONTRACT_HASH)
 
                 state.ts = int(time.time() * 1000)
                 state.restart_event.clear()
@@ -248,6 +253,7 @@ def mine_loop(address_bytes: bytes):
                 block_number = state.block_number
                 difficulty = state.difficulty
                 prev_hash = state.prev_hash
+                prev_hash_xel = state.prev_hash_xel
                 current_ts = state.ts
 
             print(f"Starting mining on block {block_number}, difficulty {difficulty}")
@@ -258,6 +264,7 @@ def mine_loop(address_bytes: bytes):
                 address_bytes,
                 difficulty,
                 prev_hash,
+                prev_hash_xel,
                 current_ts
             )
 
